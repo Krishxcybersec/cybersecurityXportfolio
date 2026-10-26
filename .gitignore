@@ -1,0 +1,16 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+.vscode/
+.idea/
+
+# Keep original coursework documents out of the public repo
+*.docx
+*.doc
+*.pdf
+
+# Never publish the borrowed vulnerable-lab setup script (not my work)
+setup.bat
+*vulnerable*lab*.bat

@@ -1,6 +1,6 @@
 # Windows Privilege-Escalation Detection
 
-> MSc Cyber Security dissertation project, University of Hertfordshire, 2025.
+> Windows privilege-escalation detection project, 2025.
 > *Analyzing and Mitigating Windows Privilege Escalation Vulnerabilities in Modern Enterprise Environments.*
 
 **This repo contains my own work: five lightweight, rule-based Python detectors** that watch a Windows host for the moment a common privilege-escalation technique is used, and log a structured alert. The idea is a middle ground between a one-off enumeration scan (like WinPEAS) and a heavyweight enterprise logging stack (like Sysmon + a SIEM): continuous, scenario-specific, low-overhead monitoring a defender can actually read.

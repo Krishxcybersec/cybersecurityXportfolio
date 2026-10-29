@@ -1,6 +1,6 @@
 # Digital Forensic Examination of a Disk Image
 
-> MSc Cyber Security coursework, Digital Forensics module, March 2025. Individual work.
+> Digital-forensics project, 2025.
 
 **Skills shown:** forensic imaging and integrity verification · evidence handling and chain of custody · disk and partition analysis · Windows registry and artefact analysis · USB/device history · timeline and media analysis · forensic reporting
 

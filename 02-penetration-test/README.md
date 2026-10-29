@@ -1,11 +1,11 @@
 # Grey-Box Penetration Test of a Linux Server
 
-> MSc Cyber Security coursework, Penetration Testing module, April 2025.
+> Penetration-testing project, 2025.
 > Group project of five. This write-up covers the whole engagement; the **SSH / port 22** work was my own contribution.
 
 **Skills shown:** network reconnaissance · service enumeration · vulnerability assessment · exploitation with Metasploit · privilege escalation · CVE analysis · remediation advice
 
-> All testing was carried out against a university-provided target in an isolated lab, over a VPN, with authorisation. The target IP, lab credentials and recovered passwords have been removed or redacted from this public version.
+> All testing was carried out against a provided target in an isolated lab, over a VPN, with authorisation. Lab credentials and recovered passwords have been removed or redacted from this public version.
 
 ---
 

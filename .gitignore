@@ -6,7 +6,7 @@ desktop.ini
 .vscode/
 .idea/
 
-# Keep original coursework documents out of the public repo
+# Keep original source documents out of the public repo
 *.docx
 *.doc
 *.pdf

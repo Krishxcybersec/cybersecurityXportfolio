@@ -1,6 +1,6 @@
 # Threat Model: Ethereal Inc. (Fintech)
 
-> MSc Cyber Security coursework, Penetration Testing module, March 2025. Individual work.
+> Threat-modelling project, 2025.
 
 **Skills shown:** threat modelling · attack trees · fintech/payment security · MITRE ATT&CK · security recommendations aligned with GDPR, PCI DSS and ISO 27001
 

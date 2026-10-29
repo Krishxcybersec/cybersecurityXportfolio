@@ -6,6 +6,12 @@ desktop.ini
 .vscode/
 .idea/
 
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+
 # Keep original source documents out of the public repo
 *.docx
 *.doc

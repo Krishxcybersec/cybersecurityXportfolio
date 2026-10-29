@@ -21,6 +21,10 @@ from datetime import datetime
 from pathlib import Path
 import winreg
 
+# Shared, unit-tested decision logic (see detection_logic.py and ../tests/).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from detection_logic import classify_always_install, READ_ERROR
+
 LOG_DIR = r"C:\ProgramData\AIE_Monitor"
 JSONL = os.path.join(LOG_DIR, "events.jsonl")
 POLL_SEC = 2
@@ -43,20 +47,23 @@ def write_event(ev: dict):
     print(f"[{ts}] {ev['severity']}: {ev['short']} — {ev['message']}", flush=True)
 
 def read_dword(root, subkey, value):
+    """Return the DWORD value, None if the key/value is absent, or READ_ERROR if
+    it exists but could not be read (e.g. permission denied). A read failure must
+    be distinguishable from 'absent' so it is never reported as safe."""
     try:
         k = winreg.OpenKey(root, subkey, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
         try:
             data, typ = winreg.QueryValueEx(k, value)
             if typ == winreg.REG_DWORD:
-                return True, int(data)
-            # non-DWORD: treat as present but unknown
-            return True, None
+                return int(data)
+            # non-DWORD: present but not the expected type
+            return None
         finally:
             winreg.CloseKey(k)
     except FileNotFoundError:
-        return False, None
-    except Exception:
-        return False, None
+        return None          # genuinely absent
+    except OSError:
+        return READ_ERROR    # present but unreadable (permission, etc.)
 
 def list_loaded_user_sids():
     """Enumerate currently loaded user hives under HKEY_USERS (ignores .DEFAULT and Classes)."""
@@ -85,13 +92,11 @@ def snapshot_state():
     state = {"HKLM": None, "HKU": {}}
 
     # HKLM
-    present, val = read_dword(winreg.HKEY_LOCAL_MACHINE, HKLM_PATH, HKLM_VALUE)
-    state["HKLM"] = (val if present else None)
+    state["HKLM"] = read_dword(winreg.HKEY_LOCAL_MACHINE, HKLM_PATH, HKLM_VALUE)
 
     # HKEY_USERS\<SID>
     for sid in list_loaded_user_sids():
-        present, val = read_dword(winreg.HKEY_USERS, rf"{sid}\{HKCU_REL}", HKLM_VALUE)
-        state["HKU"][sid] = (val if present else None)
+        state["HKU"][sid] = read_dword(winreg.HKEY_USERS, rf"{sid}\{HKCU_REL}", HKLM_VALUE)
 
     return state
 
@@ -131,18 +136,11 @@ def compare_states(prev, curr):
             }
 
 def classify_overall(state):
-    """Return (severity, short, details) for the aggregate posture."""
-    hklm = state.get("HKLM")
-    hku_vals = [v for v in state.get("HKU", {}).values() if v is not None]
-    any_hku_1 = any(v == 1 for v in hku_vals)
+    """Return (severity, short, details) for the aggregate posture.
 
-    if hklm == 1 and any_hku_1:
-        return "CRITICAL", "AlwaysInstallElevated exploitable (HKLM=1 & HKCU=1)", {"hklm": hklm, "hku_any_1": True}
-    if hklm == 1 and not any_hku_1:
-        return "HIGH", "HKLM AlwaysInstallElevated enabled (HKCU not set/0)", {"hklm": hklm, "hku_any_1": False}
-    if hklm != 1 and any_hku_1:
-        return "MEDIUM", "HKCU AlwaysInstallElevated enabled for at least one user (HKLM!=1)", {"hklm": hklm, "hku_any_1": True}
-    return "INFO", "AlwaysInstallElevated not exploitable (both unset or 0)", {"hklm": hklm, "hku_any_1": any_hku_1}
+    Delegates to the shared, unit-tested classifier, which also reports UNKNOWN
+    when a value could not be read (a collection failure must not look safe)."""
+    return classify_always_install(state.get("HKLM"), list(state.get("HKU", {}).values()))
 
 def emit_posture_event(state):
     sev, short, det = classify_overall(state)
@@ -185,7 +183,7 @@ def main():
             ev = {
                 "time_utc": now_utc(),
                 "technique": "AlwaysInstallElevated",
-                "severity": sev if sev in ("CRITICAL","HIGH","MEDIUM") else "INFO",
+                "severity": sev if sev in ("CRITICAL","HIGH","MEDIUM","UNKNOWN") else "INFO",
                 "host": os.environ.get("COMPUTERNAME", ""),
                 "user": os.environ.get("USERNAME", ""),
                 "short": f"Registry change: {ch['path']}",

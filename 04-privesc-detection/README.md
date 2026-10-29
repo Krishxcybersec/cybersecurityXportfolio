@@ -90,16 +90,39 @@ Each detector also runs on its own. They enable command-line process auditing (E
 
 ## Findings
 
-- All five techniques remained **exploitable on a fully-updated Windows 11** host when the misconfiguration was present.
+- All five are valid, known-exploitable techniques on a fully-updated Windows 11 host when the misconfiguration is present. In my testing I focused on **detecting** them rather than carrying each through to a full SYSTEM shell — see the [Detection Gap Report](https://github.com/Krishxcybersec/privesc-detection-gap-report) for the precise scope of what was demonstrated per technique.
 - Each detector flagged its technique in the lab, with contextual detail (user, command line, registry path, decoded value). **Later testing** (see my [Detection Gap Report](https://github.com/Krishxcybersec/privesc-detection-gap-report)) found an important limitation: the polling-based detectors can **miss very short-lived commands** (a fast `reg save` slipped between polls), and some have false-positive risks. These are honest findings that fed the "future work" below.
 - Against Sysmon and WinPEAS, the detectors sit in the useful middle: more targeted and readable than raw Sysmon telemetry, and continuous where WinPEAS is a one-shot snapshot.
 
 ## Limitations (honest)
 
-- **Polling, not event-driven** for some checks (2–3 s interval), so very short-lived changes can be missed. ETW / WMI event consumers would be faster.
+- **Polling** for the backup and AlwaysInstallElevated checks (2–3 s interval), so very short-lived changes can be missed; the runas and unquoted-service detectors are event-driven and now drain every new record each poll. Moving the remaining two to ETW / WMI consumers would make them faster too.
 - **Five techniques only** — no token impersonation, DLL hijacking, COM abuse or kernel exploits.
 - **Tested in a lab, not an enterprise.** At scale these would need tuning and central log management.
 - Best seen as a **proof of concept and a complement** to enterprise EDR, not a replacement.
+
+## Reliability fixes and tests
+
+An external code review flagged several real defects. They have been fixed, and the
+decision logic now lives in a dependency-free module (`detectors/detection_logic.py`)
+with a pytest suite (`tests/`) that reproduces each original failure, so a regression
+turns a test red:
+
+| Fix | What was wrong before |
+|---|---|
+| Command-line auditing key | Written to `…\Policies\System` instead of `…\Policies\System\Audit`, so it could report success without actually enabling 4688 command-line telemetry |
+| Burst event loss | The reader took only the newest 256 events and advanced its baseline past them, permanently dropping larger bursts; it now drains back to the baseline |
+| False cross-user correlation | A 4624 logon was tied to a `runas` by timing alone; it now requires the *same* target account before alerting |
+| Collection failure looked safe | An unreadable AlwaysInstallElevated value was classified "not exploitable"; it now returns `UNKNOWN` |
+| Brittle backup matching | `"save"` matched `saved`, the `HKEY_LOCAL_MACHINE` hive spelling was missed, and `diskshadow /?` alerted on its help text |
+
+Run the tests:
+
+```bash
+pip install pytest
+cd 04-privesc-detection
+pytest
+```
 
 ## Hardening recommendations
 

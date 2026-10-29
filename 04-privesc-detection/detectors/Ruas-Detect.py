@@ -7,8 +7,15 @@ Live-only detector for runas /savecred escalation (Windows)
 - Alerts written to C:\ProgramData\RunasSaveCred-Detections.csv
 Run as Administrator. Requires: pip install pywin32
 """
-import os, re, csv, time, datetime as dt, xml.etree.ElementTree as ET
+import os, re, csv, sys, time, datetime as dt, xml.etree.ElementTree as ET
 import win32evtlog  # pywin32
+
+# Shared, unit-tested decision logic (see detection_logic.py and ../tests/).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from detection_logic import (
+    parse_runas_target, runas_logon_correlates, collect_until_baseline,
+    AUDIT_POLICY_KEY, AUDIT_POLICY_VALUE,
+)
 
 OUT_FILE   = r"C:\ProgramData\RunasSaveCred-Detections.csv"
 WATCH_USER = os.environ.get("WATCH_USER", "")  # low-priv account to focus on (case-insensitive); "" = watch all. Override via the WATCH_USER env var.
@@ -108,6 +115,39 @@ def newest_record_id():
     except Exception:
         return 0
 
+def drain_new(query, baseline):
+    """Read ALL Security events newer than `baseline`, paging back to it.
+
+    Fixes the old single-batch read, which took only the newest 256 events and
+    advanced the baseline past them — a burst larger than one batch silently lost
+    the overflow. Here we page (newest-first) until we reach the baseline, then
+    hand the pages to collect_until_baseline so nothing is dropped.
+    """
+    h = win32evtlog.EvtQuery("Security", win32evtlog.EvtQueryReverseDirection, query)
+    pages = []
+    while True:
+        batch = win32evtlog.EvtNext(h, 256)  # newest first
+        if not batch:
+            break
+        page = []
+        reached = False
+        for e in batch:
+            try:
+                xml = win32evtlog.EvtRender(e, win32evtlog.EvtRenderEventXml)
+                event_id, host, rid, tcreated, data = parse_event_xml(xml)
+            except Exception:
+                continue
+            if rid is None:
+                continue
+            page.append({"rid": rid, "event_id": event_id, "host": host,
+                         "tcreated": tcreated, "data": data})
+            if rid <= baseline:
+                reached = True
+        pages.append(page)
+        if reached:
+            break
+    return collect_until_baseline(pages, baseline)
+
 def main():
     ensure_out()
 
@@ -115,45 +155,29 @@ def main():
     baseline_rid   = newest_record_id()
     start_time_utc = dt.datetime.now(dt.timezone.utc)
 
-    # Correlation memory
-    recent_runas_times = []
+    # Correlation memory: list of (timestamp, runas_target_account_lower)
+    recent_runas = []
 
     print(f"[*] Live-only mode. Baseline RecordID={baseline_rid}. StartUTC={start_time_utc.isoformat()}")
     print("[*] Monitoring Security log… Ctrl+C to stop.")
 
-    # Poll by re-querying small batches; process only record IDs > baseline
     query = "*[System[(EventID=4688 or EventID=4624 or EventID=4648 or EventID=4672)]]"
 
     try:
         while True:
-            h = win32evtlog.EvtQuery("Security", win32evtlog.EvtQueryReverseDirection, query)
-            events = win32evtlog.EvtNext(h, 256)  # newest first
-            if not events:
-                time.sleep(1); continue
-
-            # We want chronological order for new items. First filter to record_id > baseline, then sort
-            new_items = []
-            for e in events:
-                try:
-                    xml = win32evtlog.EvtRender(e, win32evtlog.EvtRenderEventXml)
-                    event_id, host, rid, tcreated, data = parse_event_xml(xml)
-                    if rid is None or rid <= baseline_rid:
-                        continue
-                    # Also enforce time gate (some logs can be ingested late)
-                    if tcreated and tcreated < start_time_utc:
-                        continue
-                    new_items.append((event_id, host, rid, tcreated, data))
-                except Exception as ex:
-                    # Ignore parse errors in live mode
-                    continue
-
+            new_items = drain_new(query, baseline_rid)
             if not new_items:
                 time.sleep(1); continue
 
-            # Process oldest->newest among the *new* ones
-            new_items.sort(key=lambda x: x[2])  # sort by RecordID
-            for event_id, host, rid, tcreated, data in new_items:
-                # Update baseline as we go
+            # Enforce the live-only time gate, then process oldest->newest.
+            items = [it for it in new_items
+                     if not (it["tcreated"] and it["tcreated"] < start_time_utc)]
+            items.sort(key=lambda x: x["rid"])
+
+            for it in items:
+                rid       = it["rid"]
+                event_id  = it["event_id"]
+                data      = it["data"]
                 if rid > baseline_rid:
                     baseline_rid = rid
 
@@ -180,10 +204,11 @@ def main():
 
                     # runas.exe /savecred
                     if newproc.endswith("\\runas.exe") and re.search(r"(?i)\s/savecred\b", cmdline):
-                        # subject user filter applies to the one launching runas
                         if user_ok(subj_user):
                             alert("RUNAS_SaveCred", f"By={subj_user}; CommandLine='{cmdline}'")
-                            recent_runas_times.append(now)
+                            # Remember WHICH account was run-as, so a later logon can be
+                            # correlated by account rather than by timing alone.
+                            recent_runas.append((now, parse_runas_target(cmdline)))
 
                     # shell spawned by runas
                     if parent.endswith("\\runas.exe") and (
@@ -197,12 +222,15 @@ def main():
                         alert("ExplicitCredLogon_4648", f"Subject={subj_user} -> Target={tgt_dom}\\{tgt_user}; Proc={procname}")
 
                 elif event_id == 4624:
-                    # only care about interactive-ish types and likely tied to runas
-                    if logon_tp in ("2","10","11"):
-                        # correlate with recent runas
-                        recent_runas_times = [t for t in recent_runas_times if (now - t).total_seconds() <= CORR_WINDOW_SEC]
-                        if recent_runas_times and (user_ok(tgt_user) or WATCH_USER == ""):
-                            alert("Post-Runas_Logon_4624", f"User={tgt_user}; LogonType={logon_tp} (soon after runas /savecred)")
+                    # Only interactive-style logons, and only when the logon is for the
+                    # SAME account a recent runas targeted (prevents linking an unrelated
+                    # user's logon to someone else's runas).
+                    recent_runas = [(t, tg) for (t, tg) in recent_runas
+                                    if (now - t).total_seconds() <= CORR_WINDOW_SEC]
+                    if logon_tp in ("2","10","11") and runas_logon_correlates(
+                            tgt_user, recent_runas, now, CORR_WINDOW_SEC):
+                        alert("Post-Runas_Logon_4624",
+                              f"User={tgt_user}; LogonType={logon_tp} (runas /savecred for the same account)")
 
                 elif event_id == 4672:
                     # ignore noisy SYSTEM tokens; focus on human accounts or your WATCH_USER
@@ -215,14 +243,14 @@ def main():
         print("\n[+] Stopped.")
 
 if __name__ == "__main__":
-    # Optional: turn on command-line auditing (non-fatal if it fails)
+    # Optional: turn on command-line auditing (non-fatal if it fails).
+    # The value lives under …\Policies\System\Audit — see detection_logic.AUDIT_POLICY_KEY.
     try:
         import winreg
-        key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE,
-                               r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System")
-        winreg.SetValueEx(key, "ProcessCreationIncludeCmdLine_Enabled", 0, winreg.REG_DWORD, 1)
+        key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, AUDIT_POLICY_KEY)
+        winreg.SetValueEx(key, AUDIT_POLICY_VALUE, 0, winreg.REG_DWORD, 1)
         winreg.CloseKey(key)
-        print("[*] Enabled ProcessCreationIncludeCmdLine_Enabled=1 (may need reboot).")
+        print(f"[*] Enabled {AUDIT_POLICY_VALUE}=1 (may need reboot).")
     except Exception as e:
         print(f"[i] Could not set command-line auditing: {e}")
     main()

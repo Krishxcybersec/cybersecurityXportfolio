@@ -6,11 +6,15 @@
 # Run as Administrator.  Requires:  pip install pywin32
 # CSV output: C:\ProgramData\UnquotedServiceEscalation-Detections.csv
 
-import os, re, time, csv, datetime as dt, xml.etree.ElementTree as ET
+import os, re, sys, time, csv, datetime as dt, xml.etree.ElementTree as ET
 import win32evtlog
 import win32com.client
 import win32security   # for SID -> name
 import winreg          # for registry tweak (4688 cmdline)
+
+# Shared, unit-tested decision logic (see detection_logic.py and ../tests/).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from detection_logic import collect_until_baseline, AUDIT_POLICY_KEY, AUDIT_POLICY_VALUE
 
 # ---------------- Config ----------------
 OUT_CSV = r"C:\ProgramData\UnquotedServiceEscalation-Detections.csv"
@@ -91,6 +95,36 @@ def newest_record_id(log_name, ids):
         return rid or 0
     except Exception:
         return 0
+
+def drain_log(log_name, query, baseline):
+    """Read ALL events on `log_name` newer than `baseline`, paging back to it.
+
+    Replaces the old single fixed-size batch (64/128), which advanced the
+    baseline past whatever it read and so lost any burst larger than one batch.
+    """
+    h = win32evtlog.EvtQuery(log_name, win32evtlog.EvtQueryReverseDirection, query)
+    pages = []
+    while True:
+        batch = win32evtlog.EvtNext(h, 256)  # newest first
+        if not batch:
+            break
+        page = []
+        reached = False
+        for e in batch:
+            try:
+                xml = win32evtlog.EvtRender(e, win32evtlog.EvtRenderEventXml)
+                eid, host, rid, tcreated, data = parse_event_xml(xml)
+            except Exception:
+                continue
+            if rid is None:
+                continue
+            page.append({"rid": rid, "eid": eid, "tcreated": tcreated, "data": data})
+            if rid <= baseline:
+                reached = True
+        pages.append(page)
+        if reached:
+            break
+    return collect_until_baseline(pages, baseline)
 
 # ----------- Service enumeration ----------
 def extract_exe_path(pathname: str):
@@ -189,71 +223,55 @@ def main():
         while True:
             # --- System log: 7036 (service running/stopped) ---
             try:
-                hsys = win32evtlog.EvtQuery("System", win32evtlog.EvtQueryReverseDirection, q_sys)
-                evs = win32evtlog.EvtNext(hsys, 64)
-                if evs:
-                    new_sys = []
-                    for e in evs:
-                        xml = win32evtlog.EvtRender(e, win32evtlog.EvtRenderEventXml)
-                        eid, host, rid, tcreated, data = parse_event_xml(xml)
-                        if rid is None or rid <= base_sys: continue
-                        if tcreated and tcreated < start_utc: continue
-                        new_sys.append((eid, rid, tcreated, data))
-                    if new_sys:
-                        new_sys.sort(key=lambda x: x[1])
-                        for eid, rid, tcreated, data in new_sys:
-                            base_sys = max(base_sys, rid)
-                            if eid == 7036:
-                                svc_name = data.get("param1","")
-                                state    = data.get("param2","")
-                                if state.lower().startswith("running"):
-                                    recent_service_starts.append((tcreated or dt.datetime.now(dt.timezone.utc), svc_name))
-                                    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=CORR_WINDOW_SEC)
-                                    recent_service_starts = [(t,s) for (t,s) in recent_service_starts if t >= cutoff]
+                new_sys = drain_log("System", q_sys, base_sys)
+                new_sys = [r for r in new_sys if not (r["tcreated"] and r["tcreated"] < start_utc)]
+                new_sys.sort(key=lambda x: x["rid"])
+                for r in new_sys:
+                    base_sys = max(base_sys, r["rid"])
+                    if r["eid"] == 7036:
+                        data = r["data"]
+                        svc_name = data.get("param1","")
+                        state    = data.get("param2","")
+                        if state.lower().startswith("running"):
+                            recent_service_starts.append((r["tcreated"] or dt.datetime.now(dt.timezone.utc), svc_name))
+                            cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=CORR_WINDOW_SEC)
+                            recent_service_starts = [(t,s) for (t,s) in recent_service_starts if t >= cutoff]
             except Exception:
                 pass
 
             # --- Security log: 4688/4720/4732 ---
             try:
-                hsec = win32evtlog.EvtQuery("Security", win32evtlog.EvtQueryReverseDirection, q_sec)
-                evs = win32evtlog.EvtNext(hsec, 128)
-                if evs:
-                    new_sec = []
-                    for e in evs:
-                        xml = win32evtlog.EvtRender(e, win32evtlog.EvtRenderEventXml)
-                        eid, host, rid, tcreated, data = parse_event_xml(xml)
-                        if rid is None or rid <= base_sec: continue
-                        if tcreated and tcreated < start_utc: continue
-                        new_sec.append((eid, rid, tcreated, data))
-                    if new_sec:
-                        new_sec.sort(key=lambda x: x[1])
-                        for eid, rid, tcreated, data in new_sec:
-                            base_sec = max(base_sec, rid)
+                new_sec = drain_log("Security", q_sec, base_sec)
+                new_sec = [r for r in new_sec if not (r["tcreated"] and r["tcreated"] < start_utc)]
+                new_sec.sort(key=lambda x: x["rid"])
+                for r in new_sec:
+                    base_sec = max(base_sec, r["rid"])
+                    eid = r["eid"]; data = r["data"]; tcreated = r["tcreated"]
 
-                            if eid == 4688:
-                                newproc = (data.get("NewProcessName","") or "").lower()
-                                if newproc in cand2svc:
-                                    svcs = ", ".join(sorted(cand2svc[newproc]))
-                                    # correlate with recent 7036 "Running"
-                                    correlated = False
-                                    t_evt = tcreated or dt.datetime.now(dt.timezone.utc)
-                                    for t,s in recent_service_starts:
-                                        if s in cand2svc[newproc] and abs((t_evt - t).total_seconds()) <= CORR_WINDOW_SEC:
-                                            correlated = True; break
-                                    msg = f"Suspicious binary executed: '{newproc}'. Possible hijack for service(s): {svcs}."
-                                    if correlated:
-                                        msg += " (Correlated with recent service start)"
-                                    alert("UnquotedServicePath_Exploit", msg)
+                    if eid == 4688:
+                        newproc = (data.get("NewProcessName","") or "").lower()
+                        if newproc in cand2svc:
+                            svcs = ", ".join(sorted(cand2svc[newproc]))
+                            # correlate with recent 7036 "Running"
+                            correlated = False
+                            t_evt = tcreated or dt.datetime.now(dt.timezone.utc)
+                            for t,s in recent_service_starts:
+                                if s in cand2svc[newproc] and abs((t_evt - t).total_seconds()) <= CORR_WINDOW_SEC:
+                                    correlated = True; break
+                            msg = f"Suspicious binary executed: '{newproc}'. Possible hijack for service(s): {svcs}."
+                            if correlated:
+                                msg += " (Correlated with recent service start)"
+                            alert("UnquotedServicePath_Exploit", msg)
 
-                            elif eid == 4720:
-                                new_user = data.get("TargetUserName","") or "?"
-                                subj     = data.get("SubjectUserName","") or "?"
-                                alert("UserCreated_4720", f"New user '{new_user}' created by '{subj}'")
+                    elif eid == 4720:
+                        new_user = data.get("TargetUserName","") or "?"
+                        subj     = data.get("SubjectUserName","") or "?"
+                        alert("UserCreated_4720", f"New user '{new_user}' created by '{subj}'")
 
-                            elif eid == 4732:
-                                group = data.get("TargetUserName","") or data.get("GroupName","") or "?"
-                                member = resolve_member_name(data)
-                                alert("AddedToLocalGroup_4732", f"Member added to local group. Group='{group}', Member='{member}'")
+                    elif eid == 4732:
+                        group = data.get("TargetUserName","") or data.get("GroupName","") or "?"
+                        member = resolve_member_name(data)
+                        alert("AddedToLocalGroup_4732", f"Member added to local group. Group='{group}', Member='{member}'")
 
             except Exception:
                 pass
@@ -265,14 +283,15 @@ def main():
 
 # ---------------- bootstrap ----------------
 if __name__ == "__main__":
-    # Best-effort: enable auditing (non-fatal if it fails)
+    # Best-effort: enable auditing (non-fatal if it fails). The command-line
+    # inclusion value lives under …\Policies\System\Audit — see
+    # detection_logic.AUDIT_POLICY_KEY.
     try:
         os.system('auditpol /set /subcategory:"Process Creation" /success:enable /failure:enable >nul 2>&1')
         os.system('auditpol /set /subcategory:"Logon" /success:enable /failure:enable >nul 2>&1')
         try:
-            key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE,
-                                   r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System")
-            winreg.SetValueEx(key, "ProcessCreationIncludeCmdLine_Enabled", 0, winreg.REG_DWORD, 1)
+            key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, AUDIT_POLICY_KEY)
+            winreg.SetValueEx(key, AUDIT_POLICY_VALUE, 0, winreg.REG_DWORD, 1)
             winreg.CloseKey(key)
         except Exception:
             pass

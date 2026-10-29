@@ -195,7 +195,8 @@ def main():
                 def user_ok(u):
                     return (not WATCH_USER) or (u.lower() == WATCH_USER.lower())
 
-                now = dt.datetime.now()
+                # Correlate on the event's own timestamp, not on when we processed it.
+                evt_time = it["tcreated"] or dt.datetime.now(dt.timezone.utc)
 
                 if event_id == 4688:
                     # cmdkey.exe
@@ -208,7 +209,7 @@ def main():
                             alert("RUNAS_SaveCred", f"By={subj_user}; CommandLine='{cmdline}'")
                             # Remember WHICH account was run-as, so a later logon can be
                             # correlated by account rather than by timing alone.
-                            recent_runas.append((now, parse_runas_target(cmdline)))
+                            recent_runas.append((evt_time, parse_runas_target(cmdline)))
 
                     # shell spawned by runas
                     if parent.endswith("\\runas.exe") and (
@@ -226,11 +227,11 @@ def main():
                     # SAME account a recent runas targeted (prevents linking an unrelated
                     # user's logon to someone else's runas).
                     recent_runas = [(t, tg) for (t, tg) in recent_runas
-                                    if (now - t).total_seconds() <= CORR_WINDOW_SEC]
+                                    if (evt_time - t).total_seconds() <= CORR_WINDOW_SEC]
                     if logon_tp in ("2","10","11") and runas_logon_correlates(
-                            tgt_user, recent_runas, now, CORR_WINDOW_SEC):
+                            tgt_user, tgt_dom, recent_runas, evt_time, CORR_WINDOW_SEC):
                         alert("Post-Runas_Logon_4624",
-                              f"User={tgt_user}; LogonType={logon_tp} (runas /savecred for the same account)")
+                              f"User={tgt_dom}\\{tgt_user}; LogonType={logon_tp} (runas /savecred for the same account)")
 
                 elif event_id == 4672:
                     # ignore noisy SYSTEM tokens; focus on human accounts or your WATCH_USER

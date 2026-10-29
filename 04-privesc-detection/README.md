@@ -96,25 +96,33 @@ Each detector also runs on its own. They enable command-line process auditing (E
 
 ## Limitations (honest)
 
-- **Polling** for the backup and AlwaysInstallElevated checks (2–3 s interval), so very short-lived changes can be missed; the runas and unquoted-service detectors are event-driven and now drain every new record each poll. Moving the remaining two to ETW / WMI consumers would make them faster too.
+- **Two kinds of polling.** The backup and AlwaysInstallElevated checks poll live state (the process list / registry, every 2–3 s), so very short-lived activity can be missed. The runas and unquoted-service detectors poll the **persisted Windows event log** (every second); a record stays in the log after the process exits, so they don't miss short-lived activity, and they now read every new record each poll. Real-time ETW / WMI subscriptions would remove the polling delay for all of them.
 - **Five techniques only** — no token impersonation, DLL hijacking, COM abuse or kernel exploits.
 - **Tested in a lab, not an enterprise.** At scale these would need tuning and central log management.
 - Best seen as a **proof of concept and a complement** to enterprise EDR, not a replacement.
 
 ## Reliability fixes and tests
 
-An external code review flagged several real defects. They have been fixed, and the
-decision logic now lives in a dependency-free module (`detectors/detection_logic.py`)
-with a pytest suite (`tests/`) that reproduces each original failure, so a regression
-turns a test red:
+Two rounds of external code review found real defects. Each one below has been
+addressed **for the cases the tests cover**. The decision logic now lives in a
+dependency-free module (`detectors/detection_logic.py`), and a pytest suite (`tests/`)
+reproduces each original failure, so a regression turns a test red.
 
-| Fix | What was wrong before |
-|---|---|
-| Command-line auditing key | Written to `…\Policies\System` instead of `…\Policies\System\Audit`, so it could report success without actually enabling 4688 command-line telemetry |
-| Burst event loss | The reader took only the newest 256 events and advanced its baseline past them, permanently dropping larger bursts; it now drains back to the baseline |
-| False cross-user correlation | A 4624 logon was tied to a `runas` by timing alone; it now requires the *same* target account before alerting |
-| Collection failure looked safe | An unreadable AlwaysInstallElevated value was classified "not exploitable"; it now returns `UNKNOWN` |
-| Brittle backup matching | `"save"` matched `saved`, the `HKEY_LOCAL_MACHINE` hive spelling was missed, and `diskshadow /?` alerted on its help text |
+| Area | What was wrong before | Now |
+|---|---|---|
+| Command-line auditing key | Written to `…\Policies\System` instead of `…\Policies\System\Audit`, so it could report success without enabling 4688 command-line telemetry | Uses the documented `…\System\Audit` key |
+| Burst event loss | The reader took only the newest 256 events and advanced its baseline past them, permanently dropping larger bursts | Reads back to the baseline; a 300-event burst loses nothing |
+| Runas ↔ logon correlation | Linked a 4624 logon to a `runas` by timing alone (unrelated users), then by account name only (same name, different domain), measured on processing time | Requires the same account **and** domain (when both are known), within a window measured on the events' own timestamps |
+| Collection failure looked safe | An unreadable AlwaysInstallElevated value, or a failure to list user hives, was classified "not exploitable"; an unreadable extra hive could also downgrade a confirmed CRITICAL | Severity reflects what was confirmed; incomplete visibility is reported separately, and yields `UNKNOWN` instead of "not exploitable" |
+| Backup matching | `"save"` matched `saved` or any `save` word in the line, the `HKEY_LOCAL_MACHINE` spelling was missed, and `diskshadow /?` alerted | `save` must be the `reg` subcommand and its argument a credential hive; both hive spellings recognised; help invocations ignored |
+
+**Still not verified, and known remaining limits:**
+
+- The tests cover the decision logic with synthetic inputs. **Live collection on a real
+  Windows host and set-up on a fresh machine have not been re-tested** since these fixes.
+- Runas correlation still matches on account and domain, not on a logon ID or SID, so it
+  is stronger than before but not a hard link between the two events.
+- A `runas /user:name@suffix` (UPN) target is matched on the account name only.
 
 Run the tests:
 

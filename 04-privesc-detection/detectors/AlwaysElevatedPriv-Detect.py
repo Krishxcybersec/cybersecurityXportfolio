@@ -65,37 +65,52 @@ def read_dword(root, subkey, value):
     except OSError:
         return READ_ERROR    # present but unreadable (permission, etc.)
 
+ERROR_NO_MORE_ITEMS = 259  # normal end of a registry enumeration
+
 def list_loaded_user_sids():
-    """Enumerate currently loaded user hives under HKEY_USERS (ignores .DEFAULT and Classes)."""
+    """Enumerate currently loaded user hives under HKEY_USERS (ignores .DEFAULT and Classes).
+
+    Returns the list of SIDs, or None if the enumeration itself failed. A failed
+    enumeration must not look like "no users have the policy set"."""
     sids = []
     try:
         root = winreg.OpenKey(winreg.HKEY_USERS, "", 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
-        i = 0
-        while True:
-            try:
-                name = winreg.EnumKey(root, i)
+        try:
+            i = 0
+            while True:
+                try:
+                    name = winreg.EnumKey(root, i)
+                except OSError as e:
+                    if getattr(e, "winerror", None) == ERROR_NO_MORE_ITEMS:
+                        break          # finished normally
+                    return None        # enumeration failed part-way
                 i += 1
                 # Typical SIDs: S-1-5-21-... ; ignore machine classes and default
                 if name.upper().endswith("_CLASSES"):
                     continue
                 if name.startswith("S-1-5-"):
                     sids.append(name)
-            except OSError:
-                break
-        winreg.CloseKey(root)
-    except Exception:
-        pass
+        finally:
+            winreg.CloseKey(root)
+    except OSError:
+        return None
     return sids
 
 def snapshot_state():
-    """Return current state dict: {'HKLM': 0/1/None, 'HKU': {sid: 0/1/None}}."""
-    state = {"HKLM": None, "HKU": {}}
+    """Return current state dict:
+    {'HKLM': value, 'HKU': {sid: value}, 'HKU_enumerated': bool}
+    where each value is 0/1, None (absent) or READ_ERROR."""
+    state = {"HKLM": None, "HKU": {}, "HKU_enumerated": True}
 
     # HKLM
     state["HKLM"] = read_dword(winreg.HKEY_LOCAL_MACHINE, HKLM_PATH, HKLM_VALUE)
 
     # HKEY_USERS\<SID>
-    for sid in list_loaded_user_sids():
+    sids = list_loaded_user_sids()
+    if sids is None:
+        state["HKU_enumerated"] = False
+        sids = []
+    for sid in sids:
         state["HKU"][sid] = read_dword(winreg.HKEY_USERS, rf"{sid}\{HKCU_REL}", HKLM_VALUE)
 
     return state
@@ -138,9 +153,12 @@ def compare_states(prev, curr):
 def classify_overall(state):
     """Return (severity, short, details) for the aggregate posture.
 
-    Delegates to the shared, unit-tested classifier, which also reports UNKNOWN
-    when a value could not be read (a collection failure must not look safe)."""
-    return classify_always_install(state.get("HKLM"), list(state.get("HKU", {}).values()))
+    Delegates to the shared, unit-tested classifier, which keeps confirmed
+    findings and reports incomplete visibility separately (a collection failure
+    must not look safe)."""
+    return classify_always_install(state.get("HKLM"),
+                                   list(state.get("HKU", {}).values()),
+                                   state.get("HKU_enumerated", True))
 
 def emit_posture_event(state):
     sev, short, det = classify_overall(state)
@@ -151,7 +169,7 @@ def emit_posture_event(state):
         "host": os.environ.get("COMPUTERNAME", ""),
         "user": os.environ.get("USERNAME", ""),
         "short": short,
-        "message": f"HKLM={state.get('HKLM')} | HKU_any_1={det['hku_any_1']}",
+        "message": f"HKLM={state.get('HKLM')} | HKU_any_1={det['hku_any_1']} | visibility={det['visibility']}",
         "policy_state": {
             "HKLM": state.get("HKLM"),
             "HKU": state.get("HKU", {})

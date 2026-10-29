@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""
+r"""
 Live-only detector for runas /savecred escalation (Windows)
 - Processes ONLY events that occur AFTER the script starts
-- Optional user filter (WATCH_USER) to reduce noise (default: 'user')
+- Optional user filter: set the WATCH_USER env var to a low-priv account to focus on
+  (default: watch all accounts)
 - Alerts written to C:\ProgramData\RunasSaveCred-Detections.csv
 Run as Administrator. Requires: pip install pywin32
 """
@@ -10,7 +11,7 @@ import os, re, csv, time, datetime as dt, xml.etree.ElementTree as ET
 import win32evtlog  # pywin32
 
 OUT_FILE   = r"C:\ProgramData\RunasSaveCred-Detections.csv"
-WATCH_USER = "user"  # set your low-priv account here (case-insensitive). Set to "" to watch all.
+WATCH_USER = os.environ.get("WATCH_USER", "")  # low-priv account to focus on (case-insensitive); "" = watch all. Override via the WATCH_USER env var.
 CORR_WINDOW_SEC = 180
 
 def ensure_out():

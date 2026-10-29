@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
+r"""
 AlwaysInstallElevated Live Detector (Windows 10/11)
 Run as Administrator.
 

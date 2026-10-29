@@ -3,7 +3,7 @@
 > Windows privilege-escalation detection project, 2025.
 > *Analyzing and Mitigating Windows Privilege Escalation Vulnerabilities in Modern Enterprise Environments.*
 
-**This repo contains my own work: five lightweight, rule-based Python detectors** that watch a Windows host for the moment a common privilege-escalation technique is used, and log a structured alert. The idea is a middle ground between a one-off enumeration scan (like WinPEAS) and a heavyweight enterprise logging stack (like Sysmon + a SIEM): continuous, scenario-specific, low-overhead monitoring a defender can actually read.
+**This project is five lightweight, rule-based Python detectors** that watch a Windows host for the moment a common privilege-escalation technique is used, and log a structured alert. (On authorship: the scripts were generated with AI assistance — see "What's mine, and what isn't" below.) The idea is a middle ground between a one-off enumeration scan (like WinPEAS) and a heavyweight enterprise logging stack (like Sysmon + a SIEM): continuous, scenario-specific, low-overhead monitoring a defender can actually read.
 
 **Skills shown:** blue-team detection engineering · Windows internals (registry, services, privileges, Event Log) · Python · `pywin32` / WMI / Event Tracing · attack–defence pairing · comparison with Sysmon and WinPEAS
 
@@ -13,7 +13,7 @@
 
 I want to be upfront about this, because it matters on a public profile.
 
-- **Mine (published here):** the five Python detection scripts and their orchestrator, the detection logic, the analysis, and the comparison with existing tools. These were written with AI assistance and then tested and tuned by me.
+- **Mine:** the project itself — choosing the five techniques, building the lab, running the tests, the analysis, and the comparison with existing tools (WinPEAS, Sysmon). The five Python detection scripts and their orchestrator were **generated with AI assistance**; my own contribution is the hands-on testing, the interpretation of results, and the reporting — not independent coding of them.
 - **Not mine, and deliberately left out:** the vulnerable-lab setup script. My lab was built on the well-known **Local Privilege Escalation Workshop installer by Sagi Shahar (@s4gi_) and Tib3rius (@tibsec)** — see [sagishahar/lpeworkshop](https://github.com/sagishahar/lpeworkshop). I used it to seed the five misconfigurations; I did not write it, so it is not included here. Credit to the original authors.
 - **Third-party tools used during testing** (standard, not my code): WinPEAS and PowerSploit/PowerUp for enumeration, and Metasploit for payload generation.
 
@@ -35,7 +35,8 @@ I want to be upfront about this, because it matters on a public profile.
 
 ## How it works
 
-- **Rule-driven, not ML.** Each detector maps to one technique, so alerts are specific and easy to act on, with few false positives.
+- **Rule-driven, not ML.** Each detector maps to one technique, aiming for specific,
+  low-noise alerts. (Some detectors still have false-positive risks — see Limitations.)
 - **Live-only.** Detectors baseline the Event Log at start-up and only report new activity, so they don't re-alert on historical events.
 - **Structured output.** Alerts go to the console and to JSON / CSV under `C:\ProgramData\...`, so they can later be shipped into a SIEM.
 - **Severity.** For example, AlwaysInstallElevated is `HIGH` when only `HKLM` is set, and `CRITICAL` when both `HKLM` and `HKCU` are `1` (i.e. actually exploitable).
@@ -90,7 +91,7 @@ Each detector also runs on its own. They enable command-line process auditing (E
 ## Findings
 
 - All five techniques remained **exploitable on a fully-updated Windows 11** host when the misconfiguration was present.
-- Each detector reliably flagged its technique in real time, with contextual detail (user, command line, registry path, decoded value) and minimal false positives.
+- Each detector flagged its technique in the lab, with contextual detail (user, command line, registry path, decoded value). **Later testing** (see my [Detection Gap Report](https://github.com/Krishxcybersec/privesc-detection-gap-report)) found an important limitation: the polling-based detectors can **miss very short-lived commands** (a fast `reg save` slipped between polls), and some have false-positive risks. These are honest findings that fed the "future work" below.
 - Against Sysmon and WinPEAS, the detectors sit in the useful middle: more targeted and readable than raw Sysmon telemetry, and continuous where WinPEAS is a one-shot snapshot.
 
 ## Limitations (honest)

@@ -32,11 +32,11 @@ Analysis steps applied: file identification, hash lookup for known-bad files, ke
 
 ### 3.1 Disk structure
 
-The image contained six partitions, including an EFI system partition, a Microsoft reserved partition and the main Windows data partition, with regions of unallocated space.
+Autopsy listed six volumes: four partitions (Windows Recovery Environment, EFI System, Microsoft Reserved and the main Windows data partition) and two small unallocated areas, about 1 MB each, at the start and end of the disk.
 
 ![Partition layout in Autopsy](images/fig01.png)
 
-The presence of multiple partitions and unallocated space was noted as a possible sign of an attempt to hide data.
+Small gaps like these are normal at the start and end of a disk, so they are not suspicious on their own. The unallocated space that matters more is inside the Windows partition, where the contents of deleted files stay until they are overwritten.
 
 ### 3.2 System and user
 
@@ -49,13 +49,13 @@ The presence of multiple partitions and unallocated space was noted as a possibl
 
 ### 3.3 Installed applications
 
-Of 58 installed programs, several stood out: **VMware Tools** (virtualisation, a way to run hidden environments), a media player, and a scheduling agent (possible automation). A **remote-access trojan** was also found in the user's Downloads folder — a key pivot point in the investigation, since it was the source of much later evidence.
+Autopsy listed 58 installed-program entries from the SOFTWARE registry hive. Most were standard Windows components. The notable one was **VMware Tools**, which is installed inside a virtual machine, so the imaged computer was most likely a virtual machine itself. A **remote-access trojan** was also found in the user's Downloads folder — a key pivot point in the investigation, since it was the source of much later evidence.
 
 ![Installed programs](images/fig02.png)
 
 ### 3.4 USB and hardware devices
 
-System logs recorded **28 external devices**, including Western Digital and Seagate external drives, Samsung phones/tablets, and VMware virtual storage. Timestamps placed the activity in 2018–2019. This matters because external and virtual storage are common ways to move or conceal files.
+Autopsy listed **28 USB device records** from the SYSTEM registry hive. Many were duplicates, or internal and virtual devices such as USB root hubs and VMware virtual devices. Four were real external devices: a Samsung phone, two Seagate portable drives and a Western Digital portable drive, connected between late January and early February 2019. This matters because phones and external drives are common ways to move or conceal files.
 
 ![Connected device history](images/fig03.png)
 

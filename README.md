@@ -13,7 +13,7 @@ All practical work was performed in isolated lab environments with authorisation
 | 3 | [Threat Model — Fintech](01-threat-model/) | Threat modelling for a payments company | Attack trees, MITRE ATT&CK, GDPR/PCI DSS/ISO 27001 |
 | 4 | [Digital Forensics — Disk Image](03-digital-forensics/) | Forensic examination of a disk image | Autopsy, registry/artefact analysis, chain of custody |
 
-> The privilege-escalation project contains my own Python code. The vulnerable-lab setup script it relied on is not mine (Tib3rius/Sagi Shahar's *lpeworkshop*) and is deliberately left out — see that project's README.
+> On authorship: the Python detectors in the privilege-escalation project were generated with AI assistance. My own contribution is choosing the techniques, building the lab, running the tests, the analysis and the write-up. The vulnerable-lab setup script it relied on is not mine (Tib3rius/Sagi Shahar's *lpeworkshop*) and is deliberately left out — see that project's README.
 
 ## Skills summary
 
